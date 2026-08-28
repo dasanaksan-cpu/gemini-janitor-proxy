@@ -76,6 +76,9 @@ export default async function handler(req, res) {
 
     if (isStream) {
       res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8");
 
