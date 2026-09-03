@@ -10,7 +10,9 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
     const isStream = body.stream === true;
-    const rawModel = body.model || 'gemini-1.5-flash';
+    
+    // Default model diubah ke gemini-3.7-flash jika JanitorAI tidak mengirimkan nama model spesifik
+    const rawModel = body.model || 'gemini-3.7-flash';
     const model = String(rawModel).replace(/^models\//, '').trim();
 
     let systemInstructionText = "";
