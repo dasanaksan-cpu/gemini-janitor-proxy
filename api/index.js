@@ -12,20 +12,25 @@ export default async function handler(req, res) {
     const isStream = body.stream === true;
     
     // Default model diubah ke gemini-3.7-flash jika JanitorAI tidak mengirimkan nama model spesifik
-    const rawModel = body.model || 'gemini-3.7-flash';
+    const rawModel = body.model || 'gemini-3.6-flash';
     const model = String(rawModel).replace(/^models\//, '').trim();
 
     let systemInstructionText = "";
     let contents = [];
     let userName = "User";
 
+    // -----------------------------------------------------------------
+    // 1. PISAHKAN SYSTEM PROMPT & SUSUN SEMUA CHAT HISTORY (TANPA ROLLING)
+    // -----------------------------------------------------------------
     for (const msg of body.messages || []) {
       if (msg.role === 'system') {
-        systemInstructionText += msg.content + "\n";
+        systemInstructionText += msg.content + "\n\n";
         const match = msg.content.match(/(?:User|{{user}}):\s*([^\n]+)/i);
         if (match) userName = match[1].trim();
       } else {
         const mappedRole = msg.role === 'assistant' ? 'model' : 'user';
+        
+        // Penggabungan pesan berurutan dengan role yang sama
         if (contents.length > 0 && contents[contents.length - 1].role === mappedRole) {
           contents[contents.length - 1].parts[0].text += "\n\n" + msg.content;
         } else {
@@ -34,10 +39,14 @@ export default async function handler(req, res) {
       }
     }
 
+    // Koreksi jika riwayat diawali oleh 'model'
     if (contents.length > 0 && contents[0].role === 'model') {
       contents.unshift({ role: 'user', parts: [{ text: '...' }] });
     }
 
+    // -----------------------------------------------------------------
+    // 2. CONFIG & SAFETY SETTINGS
+    // -----------------------------------------------------------------
     const geminiPayload = {
       contents: contents,
       safetySettings: [
@@ -76,6 +85,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: { message: err.error?.message || "Google API Error" } });
     }
 
+    // -----------------------------------------------------------------
+    // 3. STREAMING RESPONSE (SSE OpenAI Compatible)
+    // -----------------------------------------------------------------
     if (isStream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -118,8 +130,39 @@ export default async function handler(req, res) {
           }
         }
       }
+
+      // Sisa buffer terakhir
+      if (buffer && buffer.startsWith('data: ')) {
+        const dataStr = buffer.replace('data: ', '').trim();
+        if (dataStr && dataStr !== '[DONE]') {
+          try {
+            const dataObj = JSON.parse(dataStr);
+            let textPart = "";
+            if (dataObj.candidates?.[0]?.content?.parts) {
+              for (const part of dataObj.candidates[0].content.parts) {
+                if (part.text && !part.thought) textPart += part.text;
+              }
+            }
+            if (textPart) {
+              const chunk = {
+                id: "chatcmpl-" + Date.now(),
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: model,
+                choices: [{ index: 0, delta: { content: textPart }, finish_reason: null }]
+              };
+              res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            }
+          } catch (e) {}
+        }
+      }
+
       res.write("data: [DONE]\n\n");
       return res.end();
+
+    // -----------------------------------------------------------------
+    // 4. NON-STREAMING RESPONSE
+    // -----------------------------------------------------------------
     } else {
       const data = await response.json();
       let replyText = "";
